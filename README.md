@@ -72,3 +72,7 @@ See `packaging/README.md` for icon and desktop entry details.
 - App icon is loaded from `assets/Logo.png`.
 - `.venv/` and `.blueprints/` are ignored by git in this repo.
 
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
