@@ -1,6 +1,9 @@
 ﻿# OpenPixMod
 
 OpenPixMod is a desktop image editing tool focused on background removal, masking, and palette-based color keying.
+<p align="center">
+  <img src="ui/Logo.png" alt="OpenPixMod Logo" width="300">
+</p>
 
 ## Features
 
