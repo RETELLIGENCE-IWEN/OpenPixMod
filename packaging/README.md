@@ -22,6 +22,8 @@ Run:
 bash packaging/build_linux.sh
 ```
 
+Both scripts use the project virtual environment (`.venv`) Python explicitly.
+
 Then install:
 
 1. Copy binary to a location on `PATH`, e.g. `/usr/local/bin/OpenPixMod`.

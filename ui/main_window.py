@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QImage, QKeySequence, QIcon, QPixmap
+from PySide6.QtGui import QAction, QImage, QKeySequence, QIcon
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QFileDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QSpinBox, QSlider, QCheckBox, QPushButton, QMessageBox, QDockWidget, QDoubleSpinBox, QComboBox, QInputDialog,
@@ -37,9 +37,13 @@ def pil_rgba_to_qimage(img: Image.Image) -> QImage:
     return qimg.copy()
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, logo_path: Optional[Path] = None):
         super().__init__()
-        self._logo_path = Path(__file__).resolve().parent.parent / "assets" / "Logo.png"
+        self._logo_path = (
+            logo_path
+            if logo_path is not None
+            else (Path(__file__).resolve().parent.parent / "assets" / "Logo.png")
+        )
         if self._logo_path.exists():
             self.setWindowIcon(QIcon(str(self._logo_path)))
         self.setWindowTitle("OpenPixMod v0.2")
@@ -92,11 +96,11 @@ class MainWindow(QMainWindow):
     # Menu / Actions
     # ---------------------------
     def _build_menu(self) -> None:
-        open_act = QAction("Open??, self)
+        open_act = QAction("Open...", self)
         open_act.setShortcut(QKeySequence.StandardKey.Open)
         open_act.triggered.connect(self.open_file)
 
-        save_act = QAction("Save As??, self)
+        save_act = QAction("Save As...", self)
         save_act.setShortcut(QKeySequence.StandardKey.SaveAs)
         save_act.triggered.connect(self.save_as)
 
@@ -176,14 +180,6 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         panel = QWidget()
         v = QVBoxLayout(panel)
-
-        if self._logo_path.exists():
-            logo_label = QLabel()
-            logo_label.setAlignment(Qt.AlignCenter)
-            logo_pm = QPixmap(str(self._logo_path))
-            if not logo_pm.isNull():
-                logo_label.setPixmap(logo_pm.scaled(180, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                v.addWidget(logo_label)
 
         g_canvas, gl_canvas = self._make_group("Canvas")
         size_row = QHBoxLayout()

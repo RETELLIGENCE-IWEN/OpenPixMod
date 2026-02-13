@@ -54,14 +54,14 @@ python app.py
 Windows:
 
 ```powershell
-pip install pyinstaller
+.\.venv\Scripts\python.exe -m pip install pyinstaller
 packaging\build_windows.bat
 ```
 
 Linux:
 
 ```bash
-pip install pyinstaller
+./.venv/bin/python -m pip install pyinstaller
 bash packaging/build_linux.sh
 ```
 
