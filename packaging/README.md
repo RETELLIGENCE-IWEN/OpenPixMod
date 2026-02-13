@@ -1,6 +1,6 @@
-# Packaging Icons
+﻿# Packaging Icons
 
-This project uses `ui/Logo.png` as the app icon source.
+This project uses `assets/Logo.png` as the app icon source.
 
 ## Windows (PyInstaller)
 
@@ -12,7 +12,7 @@ packaging\build_windows.bat
 
 This builds `dist\OpenPixMod.exe` with:
 
-- executable icon from `ui\Logo.png`
+- executable icon from `assets\Logo.png`
 
 ## Linux (PyInstaller + desktop entry)
 
@@ -31,3 +31,4 @@ Then install:
    - `packaging/openpixmod.desktop` -> `~/.local/share/applications/openpixmod.desktop`
 
 Adjust `Exec=` and `Icon=` in `openpixmod.desktop` if needed for your install paths.
+

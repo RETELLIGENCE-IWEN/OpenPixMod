@@ -2,7 +2,7 @@
 
 OpenPixMod is a desktop image editing tool focused on background removal, masking, and palette-based color keying.
 <p align="center">
-  <img src="ui/Logo.png" alt="OpenPixMod Logo" width="300">
+  <img src="assets/Logo.png" alt="OpenPixMod Logo" width="300">
 </p>
 
 ## Features
@@ -61,5 +61,6 @@ See `packaging/README.md` for icon and desktop entry details.
 
 ## Notes
 
-- App icon is loaded from `ui/Logo.png`.
+- App icon is loaded from `assets/Logo.png`.
 - `.venv/` and `.blueprints/` are ignored by git in this repo.
+

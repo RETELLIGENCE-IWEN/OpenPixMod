@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 from pathlib import Path
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
@@ -9,7 +9,7 @@ def main() -> int:
     app.setApplicationName("OpenPixMod")
     app.setOrganizationName("OpenPixMod")
 
-    logo_path = Path(__file__).resolve().parent / "ui" / "Logo.png"
+    logo_path = Path(__file__).resolve().parent / "assets" / "Logo.png"
     if logo_path.exists():
         app.setWindowIcon(QIcon(str(logo_path)))
 
@@ -19,3 +19,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 from typing import Optional
@@ -39,7 +39,7 @@ def pil_rgba_to_qimage(img: Image.Image) -> QImage:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self._logo_path = Path(__file__).resolve().parent / "Logo.png"
+        self._logo_path = Path(__file__).resolve().parent.parent / "assets" / "Logo.png"
         if self._logo_path.exists():
             self.setWindowIcon(QIcon(str(self._logo_path)))
         self.setWindowTitle("OpenPixMod v0.2")
@@ -92,11 +92,11 @@ class MainWindow(QMainWindow):
     # Menu / Actions
     # ---------------------------
     def _build_menu(self) -> None:
-        open_act = QAction("Open…", self)
+        open_act = QAction("Open??, self)
         open_act.setShortcut(QKeySequence.StandardKey.Open)
         open_act.triggered.connect(self.open_file)
 
-        save_act = QAction("Save As…", self)
+        save_act = QAction("Save As??, self)
         save_act.setShortcut(QKeySequence.StandardKey.SaveAs)
         save_act.triggered.connect(self.save_as)
 
@@ -1506,3 +1506,4 @@ class MainWindow(QMainWindow):
         self.pos_y_spin.blockSignals(False)
         self._update_undo_redo_actions()
         self._update_status()
+
