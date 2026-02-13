@@ -5,6 +5,14 @@ OpenPixMod is a desktop image editing tool focused on background removal, maskin
   <img src="assets/Logo.png" alt="OpenPixMod Logo" width="300">
 </p>
 
+<p align="center">
+  <img src="https://img.shields.io/github/license/RETELLIGENCE-IWEN/OpenPixMod?style=flat-square&color=5D5DFF" alt="License">
+  <img src="https://img.shields.io/github/v/release/RETELLIGENCE-IWEN/OpenPixMod?style=flat-square&color=9146FF" alt="Version">
+  <img src="https://img.shields.io/github/stars/RETELLIGENCE-IWEN/OpenPixMod?style=flat-square&color=FFD700" alt="Stars">
+  <img src="https://img.shields.io/github/issues/RETELLIGENCE-IWEN/OpenPixMod?style=flat-square&color=FF4560" alt="Issues">
+  <img src="https://img.shields.io/badge/Open%20Source-Love-ff69b4?style=flat-square" alt="Open Source Love">
+</p>
+
 ## Features
 
 - Open common image formats and export to `PNG`, `JPG`, `WEBP`, and `TIFF`
