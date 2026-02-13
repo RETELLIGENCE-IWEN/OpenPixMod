@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=OpenPixMod
+Comment=OpenPixMod image and pixel modifier
+Exec=OpenPixMod
+Icon=Logo
+Terminal=false
+Categories=Graphics;
