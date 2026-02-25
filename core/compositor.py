@@ -38,6 +38,8 @@ def composite_to_canvas(
     contrast: float = 1.0,
     saturation: float = 1.0,
     gamma: float = 1.0,
+    vibrance: float = 1.0,
+    temperature: int = 0,
     selection_enabled: bool = False,
     selection_invert: bool = False,
     selection_rect: Optional[Tuple[int, int, int, int]] = None,
@@ -94,6 +96,8 @@ def composite_to_canvas(
         contrast=contrast,
         saturation=saturation,
         gamma=gamma,
+        vibrance=vibrance,
+        temperature=temperature,
     )
 
     # 3) Apply global opacity multiplier
