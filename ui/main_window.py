@@ -495,6 +495,18 @@ class MainWindow(QMainWindow):
         self.gamma_spin.setValue(self.state.gamma)
         self.gamma_spin.valueChanged.connect(self._on_adjustments_changed)
         self._add_labeled_row(gl_adj, "Gamma", self.gamma_spin)
+        self.vibrance_spin = QDoubleSpinBox()
+        self.vibrance_spin.setRange(0.0, 3.0)
+        self.vibrance_spin.setSingleStep(0.1)
+        self.vibrance_spin.setValue(getattr(self.state, "vibrance", 1.0))
+        self.vibrance_spin.valueChanged.connect(self._on_adjustments_changed)
+        self._add_labeled_row(gl_adj, "Vibrance", self.vibrance_spin)
+        self.temperature_spin = QSpinBox()
+        self.temperature_spin.setRange(-100, 100)
+        self.temperature_spin.setSingleStep(1)
+        self.temperature_spin.setValue(int(getattr(self.state, "temperature", 0)))
+        self.temperature_spin.valueChanged.connect(self._on_adjustments_changed)
+        self._add_labeled_row(gl_adj, "Temperature", self.temperature_spin)
         v.addWidget(g_adj)
 
         g_flow, gl_flow = self._make_group("Workflow")
@@ -565,6 +577,8 @@ class MainWindow(QMainWindow):
             contrast=self.state.contrast,
             saturation=self.state.saturation,
             gamma=self.state.gamma,
+            vibrance=getattr(self.state, "vibrance", 1.0),
+            temperature=getattr(self.state, "temperature", 0),
             selection_enabled=self.state.selection_enabled,
             selection_invert=self.state.selection_invert,
             selection_rect=(self.state.sel_x, self.state.sel_y, self.state.sel_w, self.state.sel_h),
@@ -862,14 +876,20 @@ class MainWindow(QMainWindow):
         self.contrast_spin.blockSignals(True)
         self.saturation_spin.blockSignals(True)
         self.gamma_spin.blockSignals(True)
+        self.vibrance_spin.blockSignals(True)
+        self.temperature_spin.blockSignals(True)
         self.brightness_spin.setValue(float(self.state.brightness))
         self.contrast_spin.setValue(float(self.state.contrast))
         self.saturation_spin.setValue(float(self.state.saturation))
         self.gamma_spin.setValue(float(self.state.gamma))
+        self.vibrance_spin.setValue(float(getattr(self.state, "vibrance", 1.0)))
+        self.temperature_spin.setValue(int(getattr(self.state, "temperature", 0)))
         self.brightness_spin.blockSignals(False)
         self.contrast_spin.blockSignals(False)
         self.saturation_spin.blockSignals(False)
         self.gamma_spin.blockSignals(False)
+        self.vibrance_spin.blockSignals(False)
+        self.temperature_spin.blockSignals(False)
 
         self.palette_widget.listw.blockSignals(True)
         self.palette_widget.listw.clear()
@@ -997,6 +1017,8 @@ class MainWindow(QMainWindow):
         self.state.contrast = float(self.contrast_spin.value())
         self.state.saturation = float(self.saturation_spin.value())
         self.state.gamma = float(self.gamma_spin.value())
+        self.state.vibrance = float(self.vibrance_spin.value())
+        self.state.temperature = int(self.temperature_spin.value())
         self._rerender()
 
     def _rotate_image(self, delta_deg: int) -> None:
@@ -1478,6 +1500,8 @@ class MainWindow(QMainWindow):
             contrast=1.0 if compare_before else self.state.contrast,
             saturation=1.0 if compare_before else self.state.saturation,
             gamma=1.0 if compare_before else self.state.gamma,
+            vibrance=1.0 if compare_before else getattr(self.state, "vibrance", 1.0),
+            temperature=0 if compare_before else getattr(self.state, "temperature", 0),
             selection_enabled=False if compare_before else self.state.selection_enabled,
             selection_invert=self.state.selection_invert,
             selection_rect=(self.state.sel_x, self.state.sel_y, self.state.sel_w, self.state.sel_h),

@@ -52,6 +52,8 @@ class ProjectState:
     contrast: float = 1.0         # 0.1..3.0
     saturation: float = 1.0       # 0.0..3.0
     gamma: float = 1.0            # 0.1..3.0
+    vibrance: float = 1.0         # 0.0..3.0 (low-sat boost)
+    temperature: int = 0          # -100..100 (cool/warm shift)
 
     def enabled_palette_rgbs(self) -> List[Tuple[int, int, int]]:
         return [p.rgb for p in self.palette if p.enabled]

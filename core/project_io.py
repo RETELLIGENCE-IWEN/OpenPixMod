@@ -64,6 +64,8 @@ def save_project(path: str, state: ProjectState) -> None:
             "contrast": state.contrast,
             "saturation": state.saturation,
             "gamma": state.gamma,
+            "vibrance": state.vibrance,
+            "temperature": state.temperature,
         },
     }
     project_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -117,4 +119,6 @@ def load_project(path: str) -> ProjectState:
         contrast=float(state_raw.get("contrast", 1.0)),
         saturation=float(state_raw.get("saturation", 1.0)),
         gamma=float(state_raw.get("gamma", 1.0)),
+        vibrance=float(state_raw.get("vibrance", 1.0)),
+        temperature=int(state_raw.get("temperature", 0)),
     )

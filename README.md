@@ -20,7 +20,7 @@ OpenPixMod is a desktop image editing tool focused on background removal, maskin
 - Selection tools: rectangle, magic wand, color range, and lasso
 - Mask controls: grow/shrink, feather, and remove small islands
 - Image transforms: scale, move, rotate, flip, fit, and center
-- Non-destructive adjustments: opacity, brightness, contrast, saturation, gamma
+- Non-destructive adjustments: opacity, brightness, contrast, saturation, gamma, vibrance, temperature
 - Undo/redo and named snapshots
 - Batch export using current project settings
 - Save/load project files (`.opm` or `.json`)
@@ -71,6 +71,10 @@ See `packaging/README.md` for icon and desktop entry details.
 
 - App icon is loaded from `assets/Logo.png`.
 - `.venv/` and `.blueprints/` are ignored by git in this repo.
+
+## Roadmap
+
+- Feature expansion plan for layers, paint/retouch, and filters: `docs/feature_expansion_plan.md`.
 
 ## License
 
