@@ -101,6 +101,8 @@ OpenPixMod currently has a single-source compositing model (`src_path` + one ima
 - Strokes persist in project save/load.
 - Brush strokes participate in undo/redo.
 
+For an expanded architecture, rollout, and QA plan dedicated to advanced brushes, see `docs/advanced_brush_tools_plan.md`.
+
 ## Phase 5 — Rich adjustment/filter stack
 
 ### Goals

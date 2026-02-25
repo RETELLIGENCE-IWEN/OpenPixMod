@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from core.state import PaletteColor, ProjectState, LayerState
+from core.state import PaletteColor, ProjectState, LayerState, BrushPreset
 
 
 PROJECT_VERSION = 2
@@ -42,6 +42,46 @@ def _palette_from_raw(raw_palette: list[dict]) -> list[PaletteColor]:
             )
         )
     return palette
+
+
+def _preset_to_raw(preset: BrushPreset) -> dict:
+    return {
+        "preset_id": preset.preset_id,
+        "name": preset.name,
+        "tool_mode": preset.tool_mode,
+        "size": preset.size,
+        "hardness": preset.hardness,
+        "spacing": preset.spacing,
+        "flow": preset.flow,
+        "opacity": preset.opacity,
+        "jitter_size": preset.jitter_size,
+        "jitter_angle": preset.jitter_angle,
+        "jitter_scatter": preset.jitter_scatter,
+        "blend_mode": preset.blend_mode,
+        "symmetry_x": bool(preset.symmetry_x),
+        "symmetry_y": bool(preset.symmetry_y),
+    }
+
+
+def _preset_from_raw(raw: dict, idx: int) -> BrushPreset:
+    fallback_id = f"custom_{idx + 1}"
+    preset_id = str(raw.get("preset_id", fallback_id)).strip() or fallback_id
+    return BrushPreset(
+        preset_id=preset_id,
+        name=str(raw.get("name", f"Custom Brush {idx + 1}")),
+        tool_mode=str(raw.get("tool_mode", "paint")).lower(),
+        size=float(raw.get("size", 24.0)),
+        hardness=float(raw.get("hardness", 0.8)),
+        spacing=float(raw.get("spacing", 0.12)),
+        flow=float(raw.get("flow", 1.0)),
+        opacity=float(raw.get("opacity", 1.0)),
+        jitter_size=float(raw.get("jitter_size", 0.0)),
+        jitter_angle=float(raw.get("jitter_angle", 0.0)),
+        jitter_scatter=float(raw.get("jitter_scatter", 0.0)),
+        blend_mode=str(raw.get("blend_mode", "normal")).lower(),
+        symmetry_x=bool(raw.get("symmetry_x", False)),
+        symmetry_y=bool(raw.get("symmetry_y", False)),
+    )
 
 
 def _layer_to_raw(layer: LayerState, project_file: Path) -> dict:
@@ -121,6 +161,9 @@ def save_project(path: str, state: ProjectState) -> None:
             "sel_h": state.sel_h,
             "layers": [_layer_to_raw(layer, project_file) for layer in state.layers],
             "active_layer_index": int(state.active_layer_index),
+            "brush_engine_version": int(state.brush_engine_version),
+            "active_brush_id": state.active_brush_id,
+            "custom_brush_presets": [_preset_to_raw(p) for p in state.custom_brush_presets],
             # legacy active layer fields for downgrade compatibility
             "src_path": _normalize_src_for_save(legacy.src_path, project_file),
             "img_scale": legacy.img_scale,
@@ -161,6 +204,13 @@ def load_project(path: str) -> ProjectState:
         # Backward-compatible migration from single-layer schema
         layers = [_layer_from_raw(state_raw, project_file, 0)]
 
+    presets_raw = state_raw.get("custom_brush_presets", [])
+    custom_presets: list[BrushPreset] = []
+    if isinstance(presets_raw, list):
+        for idx, item in enumerate(presets_raw):
+            if isinstance(item, dict):
+                custom_presets.append(_preset_from_raw(item, idx))
+
     state = ProjectState(
         out_w=int(state_raw.get("out_w", 512)),
         out_h=int(state_raw.get("out_h", 512)),
@@ -175,6 +225,9 @@ def load_project(path: str) -> ProjectState:
         sel_h=int(state_raw.get("sel_h", 0)),
         layers=layers,
         active_layer_index=int(state_raw.get("active_layer_index", 0)),
+        brush_engine_version=int(state_raw.get("brush_engine_version", 1)),
+        active_brush_id=str(state_raw.get("active_brush_id", "soft_round")),
+        custom_brush_presets=custom_presets,
     )
     state._ensure_layers()
     return state

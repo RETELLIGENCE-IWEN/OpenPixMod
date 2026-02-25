@@ -75,6 +75,7 @@ See `packaging/README.md` for icon and desktop entry details.
 ## Roadmap
 
 - Feature expansion plan for layers, paint/retouch, and filters: `docs/feature_expansion_plan.md`.
+- Advanced brush tools implementation roadmap: `docs/advanced_brush_tools_plan.md`.
 
 ## License
 
