@@ -10,13 +10,13 @@ from PySide6.QtGui import QAction, QImage, QKeySequence, QIcon
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QFileDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QSpinBox, QSlider, QCheckBox, QPushButton, QMessageBox, QDockWidget, QDoubleSpinBox, QComboBox, QInputDialog,
-    QGroupBox, QScrollArea
+    QGroupBox, QScrollArea, QListWidget, QListWidgetItem
 )
 
-from core.state import ProjectState, PaletteColor
+from core.state import ProjectState, PaletteColor, LayerState
 from core.io import load_image_rgba, save_image
 from core.project_io import save_project, load_project
-from core.compositor import composite_to_canvas
+from core.compositor import composite_layers_to_canvas, LayerRenderInput
 from core.batch import batch_export_with_state
 from core.selection import (
     magic_wand_mask,
@@ -49,14 +49,14 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("OpenPixMod v0.2")
 
         self.state = ProjectState()
-        self._src_img: Optional[Image.Image] = None
+        self._layer_images: list[Optional[Image.Image]] = [None]
         self._preview_img: Optional[Image.Image] = None
         self._project_path: Optional[str] = None
-        self._undo_stack: list[tuple[ProjectState, Optional[np.ndarray], list[tuple[int, int]]]] = []
-        self._redo_stack: list[tuple[ProjectState, Optional[np.ndarray], list[tuple[int, int]]]] = []
+        self._undo_stack: list[tuple[ProjectState, Optional[np.ndarray], list[tuple[int, int]], list[Optional[Image.Image]]]] = []
+        self._redo_stack: list[tuple[ProjectState, Optional[np.ndarray], list[tuple[int, int]], list[Optional[Image.Image]]]] = []
         self._history_limit = 100
         self._restoring_state = False
-        self._snapshots: dict[str, tuple[ProjectState, Optional[np.ndarray], list[tuple[int, int]]]] = {}
+        self._snapshots: dict[str, tuple[ProjectState, Optional[np.ndarray], list[tuple[int, int]], list[Optional[Image.Image]]]] = {}
         self._pick_mode: str = "eyedropper"
         self._selection_mask: Optional[np.ndarray] = None
         self._lasso_points: list[tuple[int, int]] = []
@@ -85,12 +85,151 @@ class MainWindow(QMainWindow):
 
         # Right-side controls dock
         self._build_controls_dock()
+        self._build_layers_dock()
 
         self.setAcceptDrops(True)
         self.resize(1200, 800)
         self._rerender()
         self._sync_ui_from_state()
         self._update_status()
+
+    @property
+    def _src_img(self) -> Optional[Image.Image]:
+        self.state._ensure_layers()
+        idx = self.state.active_layer_index
+        while len(self._layer_images) < len(self.state.layers):
+            self._layer_images.append(None)
+        if idx >= len(self._layer_images):
+            self._layer_images.extend([None] * (idx - len(self._layer_images) + 1))
+        return self._layer_images[idx]
+
+    @_src_img.setter
+    def _src_img(self, img: Optional[Image.Image]) -> None:
+        self.state._ensure_layers()
+        idx = self.state.active_layer_index
+        while len(self._layer_images) < len(self.state.layers):
+            self._layer_images.append(None)
+        if idx >= len(self._layer_images):
+            self._layer_images.extend([None] * (idx - len(self._layer_images) + 1))
+        self._layer_images[idx] = img
+
+    def _sync_layer_image_slots(self) -> None:
+        self.state._ensure_layers()
+        if len(self._layer_images) < len(self.state.layers):
+            self._layer_images.extend([None] * (len(self.state.layers) - len(self._layer_images)))
+        elif len(self._layer_images) > len(self.state.layers):
+            self._layer_images = self._layer_images[:len(self.state.layers)]
+
+
+    def _build_layers_dock(self) -> None:
+        dock = QDockWidget("Layers", self)
+        dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        root = QWidget()
+        v = QVBoxLayout(root)
+        self.layers_list = QListWidget()
+        self.layers_list.currentRowChanged.connect(self._on_layer_selected)
+        v.addWidget(self.layers_list)
+
+        row = QHBoxLayout()
+        self.layer_add_btn = QPushButton("Add")
+        self.layer_add_btn.clicked.connect(self._add_layer)
+        row.addWidget(self.layer_add_btn)
+        self.layer_remove_btn = QPushButton("Remove")
+        self.layer_remove_btn.clicked.connect(self._remove_layer)
+        row.addWidget(self.layer_remove_btn)
+        self.layer_dup_btn = QPushButton("Duplicate")
+        self.layer_dup_btn.clicked.connect(self._duplicate_layer)
+        row.addWidget(self.layer_dup_btn)
+        v.addLayout(row)
+
+        row2 = QHBoxLayout()
+        self.layer_up_btn = QPushButton("Up")
+        self.layer_up_btn.clicked.connect(lambda: self._move_layer(-1))
+        row2.addWidget(self.layer_up_btn)
+        self.layer_down_btn = QPushButton("Down")
+        self.layer_down_btn.clicked.connect(lambda: self._move_layer(1))
+        row2.addWidget(self.layer_down_btn)
+        self.layer_visible_chk = QCheckBox("Visible")
+        self.layer_visible_chk.toggled.connect(self._toggle_layer_visible)
+        row2.addWidget(self.layer_visible_chk)
+        v.addLayout(row2)
+
+        dock.setWidget(root)
+        self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+        self._refresh_layers_ui()
+
+    def _refresh_layers_ui(self) -> None:
+        self._sync_layer_image_slots()
+        self.layers_list.blockSignals(True)
+        self.layers_list.clear()
+        for i, layer in enumerate(self.state.layers):
+            prefix = "👁" if layer.visible else "🚫"
+            self.layers_list.addItem(QListWidgetItem(f"{prefix} {i+1}: {layer.name}"))
+        self.layers_list.setCurrentRow(self.state.active_layer_index)
+        self.layers_list.blockSignals(False)
+        active = self.state.active_layer()
+        self.layer_visible_chk.blockSignals(True)
+        self.layer_visible_chk.setChecked(bool(active.visible))
+        self.layer_visible_chk.blockSignals(False)
+
+    def _on_layer_selected(self, row: int) -> None:
+        if row < 0 or row >= len(self.state.layers):
+            return
+        self.state.active_layer_index = row
+        self._sync_ui_from_state()
+        self._rerender()
+
+    def _add_layer(self) -> None:
+        self._push_undo_state()
+        idx = len(self.state.layers) + 1
+        self.state.layers.insert(0, LayerState(name=f"Layer {idx}"))
+        self._layer_images.insert(0, None)
+        self.state.active_layer_index = 0
+        self._refresh_layers_ui()
+        self._sync_ui_from_state()
+        self._rerender()
+
+    def _remove_layer(self) -> None:
+        if len(self.state.layers) <= 1:
+            return
+        self._push_undo_state()
+        i = self.state.active_layer_index
+        self.state.layers.pop(i)
+        self._layer_images.pop(i)
+        self.state.active_layer_index = max(0, min(i, len(self.state.layers) - 1))
+        self._refresh_layers_ui()
+        self._sync_ui_from_state()
+        self._rerender()
+
+    def _duplicate_layer(self) -> None:
+        self._push_undo_state()
+        i = self.state.active_layer_index
+        src_layer = deepcopy(self.state.layers[i])
+        src_layer.name = f"{src_layer.name} Copy"
+        self.state.layers.insert(i, src_layer)
+        self._layer_images.insert(i, None if self._layer_images[i] is None else self._layer_images[i].copy())
+        self.state.active_layer_index = i
+        self._refresh_layers_ui()
+        self._sync_ui_from_state()
+        self._rerender()
+
+    def _move_layer(self, delta: int) -> None:
+        i = self.state.active_layer_index
+        j = i + delta
+        if j < 0 or j >= len(self.state.layers):
+            return
+        self._push_undo_state()
+        self.state.layers[i], self.state.layers[j] = self.state.layers[j], self.state.layers[i]
+        self._layer_images[i], self._layer_images[j] = self._layer_images[j], self._layer_images[i]
+        self.state.active_layer_index = j
+        self._refresh_layers_ui()
+        self._sync_ui_from_state()
+        self._rerender()
+
+    def _toggle_layer_visible(self, checked: bool) -> None:
+        self.state.active_layer().visible = bool(checked)
+        self._refresh_layers_ui()
+        self._rerender()
 
     # ---------------------------
     # Menu / Actions
@@ -555,34 +694,44 @@ class MainWindow(QMainWindow):
             return
 
         # Render full-res export from current state
-        export_img = composite_to_canvas(
-            src_rgba_pil=self._src_img,
+        self._sync_layer_image_slots()
+        export_layers: list[LayerRenderInput] = []
+        for i, layer in enumerate(self.state.layers):
+            export_layers.append(
+                LayerRenderInput(
+                    src_rgba_pil=self._layer_images[i] if i < len(self._layer_images) else None,
+                    visible=layer.visible,
+                    blend_mode=layer.blend_mode,
+                    img_scale=layer.img_scale,
+                    img_offset=(layer.img_off_x, layer.img_off_y),
+                    rotation_deg=layer.rotation_deg,
+                    palette_rgbs=layer.enabled_palette_rgbs(),
+                    tolerance=layer.tolerance,
+                    opacity=layer.opacity,
+                    color_key_mode=layer.color_key_mode,
+                    hsv_h_tol=layer.hsv_h_tol,
+                    hsv_s_tol=layer.hsv_s_tol,
+                    hsv_v_tol=layer.hsv_v_tol,
+                    mask_grow_shrink=layer.mask_grow_shrink,
+                    mask_feather_radius=layer.mask_feather_radius,
+                    remove_islands_min_size=layer.remove_islands_min_size,
+                    brightness=layer.brightness,
+                    contrast=layer.contrast,
+                    saturation=layer.saturation,
+                    gamma=layer.gamma,
+                    vibrance=layer.vibrance,
+                    temperature=layer.temperature,
+                    selection_enabled=self.state.selection_enabled and i == self.state.active_layer_index,
+                    selection_invert=self.state.selection_invert,
+                    selection_rect=(self.state.sel_x, self.state.sel_y, self.state.sel_w, self.state.sel_h),
+                    selection_mask=self._selection_mask if i == self.state.active_layer_index else None,
+                )
+            )
+        export_img = composite_layers_to_canvas(
+            layers=export_layers,
             out_size=(self.state.out_w, self.state.out_h),
-            img_scale=self.state.img_scale,
-            img_offset=(self.state.img_off_x, self.state.img_off_y),
-            rotation_deg=self.state.rotation_deg,
-            palette_rgbs=self.state.enabled_palette_rgbs(),
-            tolerance=self.state.tolerance,
-            opacity=self.state.opacity,
-            color_key_mode=self.state.color_key_mode,
-            hsv_h_tol=self.state.hsv_h_tol,
-            hsv_s_tol=self.state.hsv_s_tol,
-            hsv_v_tol=self.state.hsv_v_tol,
-            mask_grow_shrink=self.state.mask_grow_shrink,
-            mask_feather_radius=self.state.mask_feather_radius,
-            remove_islands_min_size=self.state.remove_islands_min_size,
             high_quality=self.state.high_quality_resample,
             nearest_neighbor=self.state.nearest_neighbor,
-            brightness=self.state.brightness,
-            contrast=self.state.contrast,
-            saturation=self.state.saturation,
-            gamma=self.state.gamma,
-            vibrance=getattr(self.state, "vibrance", 1.0),
-            temperature=getattr(self.state, "temperature", 0),
-            selection_enabled=self.state.selection_enabled,
-            selection_invert=self.state.selection_invert,
-            selection_rect=(self.state.sel_x, self.state.sel_y, self.state.sel_w, self.state.sel_h),
-            selection_mask=self._selection_mask,
         )
 
         try:
@@ -611,16 +760,20 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Open project failed", str(e))
             return
 
-        loaded_img: Optional[Image.Image] = None
         src_error: Optional[str] = None
-        if loaded_state.src_path:
-            try:
-                loaded_img = load_image_rgba(loaded_state.src_path)
-            except Exception as e:
-                src_error = str(e)
+        loaded_images: list[Optional[Image.Image]] = []
+        for layer in loaded_state.layers:
+            img: Optional[Image.Image] = None
+            if layer.src_path:
+                try:
+                    img = load_image_rgba(layer.src_path)
+                except Exception as e:
+                    src_error = str(e)
+            loaded_images.append(img)
 
         self.state = loaded_state
-        self._src_img = loaded_img
+        self._layer_images = loaded_images
+        self._sync_layer_image_slots()
         self._project_path = path
         self._selection_mask = None
         self._lasso_points = []
@@ -662,6 +815,7 @@ class MainWindow(QMainWindow):
             return
 
         self.state.src_path = path
+        self.state.active_layer().name = Path(path).stem
         self._src_img = img
         self._project_path = None
         self._selection_mask = None
@@ -717,7 +871,8 @@ class MainWindow(QMainWindow):
             return
         mask_copy = None if self._selection_mask is None else self._selection_mask.copy()
         lasso_copy = list(self._lasso_points)
-        self._undo_stack.append((deepcopy(self.state), mask_copy, lasso_copy))
+        imgs_copy = [None if img is None else img.copy() for img in self._layer_images]
+        self._undo_stack.append((deepcopy(self.state), mask_copy, lasso_copy, imgs_copy))
         if len(self._undo_stack) > self._history_limit:
             self._undo_stack.pop(0)
         self._redo_stack.clear()
@@ -728,11 +883,14 @@ class MainWindow(QMainWindow):
         state: ProjectState,
         selection_mask: Optional[np.ndarray],
         lasso_points: list[tuple[int, int]],
+        layer_images: list[Optional[Image.Image]],
     ) -> None:
         self._restoring_state = True
         self.state = deepcopy(state)
         self._selection_mask = None if selection_mask is None else selection_mask.copy()
         self._lasso_points = list(lasso_points)
+        self._layer_images = [None if img is None else img.copy() for img in layer_images]
+        self._sync_layer_image_slots()
         self._sync_ui_from_state()
         self._restoring_state = False
         self._rerender()
@@ -741,18 +899,20 @@ class MainWindow(QMainWindow):
         if not self._undo_stack:
             return
         cur_mask = None if self._selection_mask is None else self._selection_mask.copy()
-        self._redo_stack.append((deepcopy(self.state), cur_mask, list(self._lasso_points)))
-        prev_state, prev_mask, prev_lasso = self._undo_stack.pop()
-        self._apply_state(prev_state, prev_mask, prev_lasso)
+        cur_imgs = [None if img is None else img.copy() for img in self._layer_images]
+        self._redo_stack.append((deepcopy(self.state), cur_mask, list(self._lasso_points), cur_imgs))
+        prev_state, prev_mask, prev_lasso, prev_imgs = self._undo_stack.pop()
+        self._apply_state(prev_state, prev_mask, prev_lasso, prev_imgs)
         self._update_undo_redo_actions()
 
     def _redo(self) -> None:
         if not self._redo_stack:
             return
         cur_mask = None if self._selection_mask is None else self._selection_mask.copy()
-        self._undo_stack.append((deepcopy(self.state), cur_mask, list(self._lasso_points)))
-        nxt_state, nxt_mask, nxt_lasso = self._redo_stack.pop()
-        self._apply_state(nxt_state, nxt_mask, nxt_lasso)
+        cur_imgs = [None if img is None else img.copy() for img in self._layer_images]
+        self._undo_stack.append((deepcopy(self.state), cur_mask, list(self._lasso_points), cur_imgs))
+        nxt_state, nxt_mask, nxt_lasso, nxt_imgs = self._redo_stack.pop()
+        self._apply_state(nxt_state, nxt_mask, nxt_lasso, nxt_imgs)
         self._update_undo_redo_actions()
 
     def _update_undo_redo_actions(self) -> None:
@@ -762,6 +922,8 @@ class MainWindow(QMainWindow):
             self._act_redo.setEnabled(bool(self._redo_stack))
 
     def _sync_ui_from_state(self) -> None:
+        if hasattr(self, "layers_list"):
+            self._refresh_layers_ui()
         self.out_w.blockSignals(True)
         self.out_h.blockSignals(True)
         self.out_w.setValue(int(self.state.out_w))
@@ -1073,7 +1235,8 @@ class MainWindow(QMainWindow):
             return
         nm = name.strip()
         mask_copy = None if self._selection_mask is None else self._selection_mask.copy()
-        self._snapshots[nm] = (deepcopy(self.state), mask_copy, list(self._lasso_points))
+        imgs_copy = [None if img is None else img.copy() for img in self._layer_images]
+        self._snapshots[nm] = (deepcopy(self.state), mask_copy, list(self._lasso_points), imgs_copy)
         if self.snapshot_combo.findText(nm) < 0:
             self.snapshot_combo.addItem(nm)
         self.snapshot_combo.setCurrentText(nm)
@@ -1083,8 +1246,8 @@ class MainWindow(QMainWindow):
         if not nm or nm not in self._snapshots:
             return
         self._push_undo_state()
-        st, mk, lp = self._snapshots[nm]
-        self._apply_state(deepcopy(st), None if mk is None else mk.copy(), list(lp))
+        st, mk, lp, imgs = self._snapshots[nm]
+        self._apply_state(deepcopy(st), None if mk is None else mk.copy(), list(lp), [None if img is None else img.copy() for img in imgs])
 
     def batch_export(self) -> None:
         in_dir = QFileDialog.getExistingDirectory(self, "Batch Input Folder")
@@ -1478,34 +1641,46 @@ class MainWindow(QMainWindow):
     # ---------------------------
     def _rerender(self) -> None:
         compare_before = getattr(self, "compare_chk", None) is not None and self.compare_chk.isChecked()
-        self._preview_img = composite_to_canvas(
-            src_rgba_pil=self._src_img,
+        self._sync_layer_image_slots()
+        layers_render: list[LayerRenderInput] = []
+        for i, layer in enumerate(self.state.layers):
+            src_img = self._layer_images[i] if i < len(self._layer_images) else None
+            layers_render.append(
+                LayerRenderInput(
+                    src_rgba_pil=src_img,
+                    visible=layer.visible,
+                    blend_mode=layer.blend_mode,
+                    img_scale=layer.img_scale,
+                    img_offset=(layer.img_off_x, layer.img_off_y),
+                    rotation_deg=layer.rotation_deg,
+                    palette_rgbs=layer.enabled_palette_rgbs(),
+                    tolerance=0 if compare_before else layer.tolerance,
+                    opacity=layer.opacity,
+                    color_key_mode=layer.color_key_mode,
+                    hsv_h_tol=layer.hsv_h_tol,
+                    hsv_s_tol=layer.hsv_s_tol,
+                    hsv_v_tol=layer.hsv_v_tol,
+                    mask_grow_shrink=0 if compare_before else layer.mask_grow_shrink,
+                    mask_feather_radius=0 if compare_before else layer.mask_feather_radius,
+                    remove_islands_min_size=0 if compare_before else layer.remove_islands_min_size,
+                    brightness=1.0 if compare_before else layer.brightness,
+                    contrast=1.0 if compare_before else layer.contrast,
+                    saturation=1.0 if compare_before else layer.saturation,
+                    gamma=1.0 if compare_before else layer.gamma,
+                    vibrance=1.0 if compare_before else layer.vibrance,
+                    temperature=0 if compare_before else layer.temperature,
+                    selection_enabled=False if compare_before else (self.state.selection_enabled and i == self.state.active_layer_index),
+                    selection_invert=self.state.selection_invert,
+                    selection_rect=(self.state.sel_x, self.state.sel_y, self.state.sel_w, self.state.sel_h),
+                    selection_mask=None if compare_before else (self._selection_mask if i == self.state.active_layer_index else None),
+                )
+            )
+
+        self._preview_img = composite_layers_to_canvas(
+            layers=layers_render,
             out_size=(self.state.out_w, self.state.out_h),
-            img_scale=self.state.img_scale,
-            img_offset=(self.state.img_off_x, self.state.img_off_y),
-            rotation_deg=self.state.rotation_deg,
-            palette_rgbs=self.state.enabled_palette_rgbs(),
-            tolerance=0 if compare_before else self.state.tolerance,
-            opacity=self.state.opacity,
-            color_key_mode=self.state.color_key_mode,
-            hsv_h_tol=self.state.hsv_h_tol,
-            hsv_s_tol=self.state.hsv_s_tol,
-            hsv_v_tol=self.state.hsv_v_tol,
-            mask_grow_shrink=0 if compare_before else self.state.mask_grow_shrink,
-            mask_feather_radius=0 if compare_before else self.state.mask_feather_radius,
-            remove_islands_min_size=0 if compare_before else self.state.remove_islands_min_size,
             high_quality=self.state.high_quality_resample,
             nearest_neighbor=self.state.nearest_neighbor,
-            brightness=1.0 if compare_before else self.state.brightness,
-            contrast=1.0 if compare_before else self.state.contrast,
-            saturation=1.0 if compare_before else self.state.saturation,
-            gamma=1.0 if compare_before else self.state.gamma,
-            vibrance=1.0 if compare_before else getattr(self.state, "vibrance", 1.0),
-            temperature=0 if compare_before else getattr(self.state, "temperature", 0),
-            selection_enabled=False if compare_before else self.state.selection_enabled,
-            selection_invert=self.state.selection_invert,
-            selection_rect=(self.state.sel_x, self.state.sel_y, self.state.sel_w, self.state.sel_h),
-            selection_mask=None if compare_before else self._selection_mask,
         )
         qimg = pil_rgba_to_qimage(self._preview_img)
         self.canvas.set_preview(qimg, (self.state.out_w, self.state.out_h))
