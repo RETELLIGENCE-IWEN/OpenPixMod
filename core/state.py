@@ -63,6 +63,10 @@ class LayerState:
     vibrance: float = 1.0
     temperature: int = 0
 
+    # Non-destructive alpha painting mask stored as PNG(base64) grayscale
+    # (same pixel size as source image). None means fully opaque.
+    alpha_paint_mask_data: Optional[str] = None
+
     def enabled_palette_rgbs(self) -> List[Tuple[int, int, int]]:
         return [p.rgb for p in self.palette if p.enabled]
 

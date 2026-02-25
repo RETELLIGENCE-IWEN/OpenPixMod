@@ -24,6 +24,9 @@ class CanvasWidget(QWidget):
         on_pick_color_at_canvas_pos: Callable[[int, int], None],
         on_pick_drag_at_canvas_pos: Optional[Callable[[int, int], None]] = None,
         on_pick_finish: Optional[Callable[[], None]] = None,
+        on_paint_start_at_canvas_pos: Optional[Callable[[int, int], None]] = None,
+        on_paint_drag_at_canvas_pos: Optional[Callable[[int, int], None]] = None,
+        on_paint_finish: Optional[Callable[[], None]] = None,
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
@@ -42,10 +45,13 @@ class CanvasWidget(QWidget):
         self._dragging_left = False
         self._dragging_mid = False
         self._dragging_pick = False
+        self._dragging_paint = False
         self._last_pos = QPoint()
         self._last_pick_canvas_xy: Optional[Tuple[int, int]] = None
+        self._last_paint_canvas_xy: Optional[Tuple[int, int]] = None
 
         self.eyedropper_enabled = False
+        self.paint_enabled = False
         self.show_pixel_grid = False
         self._selection_enabled = False
         self._selection_rect_canvas: Optional[Tuple[float, float, float, float]] = None
@@ -57,6 +63,9 @@ class CanvasWidget(QWidget):
         self._on_pick_color_at_canvas_pos = on_pick_color_at_canvas_pos
         self._on_pick_drag_at_canvas_pos = on_pick_drag_at_canvas_pos
         self._on_pick_finish = on_pick_finish
+        self._on_paint_start_at_canvas_pos = on_paint_start_at_canvas_pos
+        self._on_paint_drag_at_canvas_pos = on_paint_drag_at_canvas_pos
+        self._on_paint_finish = on_paint_finish
 
         self._ants_phase = 0.0
         self._ants_timer = QTimer(self)
@@ -141,6 +150,8 @@ class CanvasWidget(QWidget):
         msg = "Wheel: view zoom | Middle-drag: pan view | Ctrl+Wheel: image zoom | Left-drag: move image"
         if self.eyedropper_enabled:
             msg = "Eyedropper ON: click image to sample color | " + msg
+        elif self.paint_enabled:
+            msg = "Paint tool ON: drag to paint alpha mask | " + msg
         p.drawText(10, self.height() - 10, msg)
 
     def _draw_checkerboard(self, p: QPainter, r: QRectF, cell: int) -> None:
@@ -309,6 +320,13 @@ class CanvasWidget(QWidget):
                     self._dragging_pick = True
                     self._last_pick_canvas_xy = canvas_xy
                 return
+            if self.paint_enabled:
+                canvas_xy = self._widget_to_canvas_xy(self._last_pos)
+                if canvas_xy is not None and self._on_paint_start_at_canvas_pos is not None:
+                    self._on_paint_start_at_canvas_pos(canvas_xy[0], canvas_xy[1])
+                    self._dragging_paint = True
+                    self._last_paint_canvas_xy = canvas_xy
+                return
             self._dragging_left = True
         elif e.button() == Qt.MiddleButton:
             self._dragging_mid = True
@@ -329,6 +347,12 @@ class CanvasWidget(QWidget):
                 if canvas_xy is not None and canvas_xy != self._last_pick_canvas_xy:
                     self._on_pick_drag_at_canvas_pos(canvas_xy[0], canvas_xy[1])
                     self._last_pick_canvas_xy = canvas_xy
+        elif self._dragging_paint:
+            if self._on_paint_drag_at_canvas_pos is not None:
+                canvas_xy = self._widget_to_canvas_xy(pos)
+                if canvas_xy is not None and canvas_xy != self._last_paint_canvas_xy:
+                    self._on_paint_drag_at_canvas_pos(canvas_xy[0], canvas_xy[1])
+                    self._last_paint_canvas_xy = canvas_xy
         elif self._dragging_mid:
             self._view_pan_x += dx
             self._view_pan_y += dy
@@ -342,6 +366,11 @@ class CanvasWidget(QWidget):
                 self._last_pick_canvas_xy = None
                 if self._on_pick_finish is not None:
                     self._on_pick_finish()
+            if self._dragging_paint:
+                self._dragging_paint = False
+                self._last_paint_canvas_xy = None
+                if self._on_paint_finish is not None:
+                    self._on_paint_finish()
         elif e.button() == Qt.MiddleButton:
             self._dragging_mid = False
 

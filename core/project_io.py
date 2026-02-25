@@ -110,6 +110,7 @@ def _layer_to_raw(layer: LayerState, project_file: Path) -> dict:
         "gamma": layer.gamma,
         "vibrance": layer.vibrance,
         "temperature": layer.temperature,
+        "alpha_paint_mask_data": layer.alpha_paint_mask_data,
     }
 
 
@@ -139,6 +140,7 @@ def _layer_from_raw(state_raw: dict, project_file: Path, idx: int) -> LayerState
         gamma=float(state_raw.get("gamma", 1.0)),
         vibrance=float(state_raw.get("vibrance", 1.0)),
         temperature=int(state_raw.get("temperature", 0)),
+        alpha_paint_mask_data=state_raw.get("alpha_paint_mask_data"),
     )
 
 
