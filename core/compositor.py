@@ -48,6 +48,7 @@ class LayerRenderInput:
     selection_invert: bool = False
     selection_rect: Optional[Tuple[int, int, int, int]] = None
     selection_mask: Optional[np.ndarray] = None
+    alpha_paint_mask: Optional[np.ndarray] = None
 
 
 def _process_layer_rgba(layer: LayerRenderInput) -> Optional[np.ndarray]:
@@ -92,6 +93,10 @@ def _process_layer_rgba(layer: LayerRenderInput) -> Optional[np.ndarray]:
         feather_radius=int(layer.mask_feather_radius),
         remove_islands_min_size=int(layer.remove_islands_min_size),
     )
+
+    if layer.alpha_paint_mask is not None and layer.alpha_paint_mask.shape == src_np[..., 3].shape:
+        paint_a = layer.alpha_paint_mask.astype(np.float32) / 255.0
+        src_np[..., 3] = np.clip(src_np[..., 3].astype(np.float32) * paint_a, 0, 255).astype(np.uint8)
 
     src_np = apply_adjustments_rgba(
         src_np,

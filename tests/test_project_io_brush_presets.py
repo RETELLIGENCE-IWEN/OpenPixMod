@@ -13,6 +13,7 @@ class ProjectIOBrushPresetTests(unittest.TestCase):
         state = ProjectState()
         state.brush_engine_version = 3
         state.active_brush_id = "textured_round"
+        state.layers[0].alpha_paint_mask_data = "maskdata"
         state.custom_brush_presets = [
             BrushPreset(
                 preset_id="textured_round",
@@ -39,6 +40,7 @@ class ProjectIOBrushPresetTests(unittest.TestCase):
 
         self.assertEqual(loaded.brush_engine_version, 3)
         self.assertEqual(loaded.active_brush_id, "textured_round")
+        self.assertEqual(loaded.layers[0].alpha_paint_mask_data, "maskdata")
         self.assertEqual(len(loaded.custom_brush_presets), 1)
         preset = loaded.custom_brush_presets[0]
         self.assertEqual(preset.preset_id, "textured_round")

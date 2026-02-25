@@ -1,7 +1,10 @@
 ﻿from __future__ import annotations
 from copy import deepcopy
+import base64
+import io
 from pathlib import Path
 from typing import Optional
+import random
 import numpy as np
 from PIL import Image
 
@@ -13,7 +16,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QScrollArea, QListWidget, QListWidgetItem
 )
 
-from core.state import ProjectState, PaletteColor, LayerState
+from core.state import ProjectState, PaletteColor, LayerState, BrushPreset
 from core.io import load_image_rgba, save_image
 from core.project_io import save_project, load_project
 from core.compositor import composite_layers_to_canvas, LayerRenderInput
@@ -50,16 +53,22 @@ class MainWindow(QMainWindow):
 
         self.state = ProjectState()
         self._layer_images: list[Optional[Image.Image]] = [None]
+        self._layer_alpha_masks: list[Optional[np.ndarray]] = [None]
         self._preview_img: Optional[Image.Image] = None
         self._project_path: Optional[str] = None
-        self._undo_stack: list[tuple[ProjectState, Optional[np.ndarray], list[tuple[int, int]], list[Optional[Image.Image]]]] = []
-        self._redo_stack: list[tuple[ProjectState, Optional[np.ndarray], list[tuple[int, int]], list[Optional[Image.Image]]]] = []
+        self._undo_stack: list[tuple[ProjectState, Optional[np.ndarray], list[tuple[int, int]], list[Optional[Image.Image]], list[Optional[np.ndarray]]]] = []
+        self._redo_stack: list[tuple[ProjectState, Optional[np.ndarray], list[tuple[int, int]], list[Optional[Image.Image]], list[Optional[np.ndarray]]]] = []
         self._history_limit = 100
         self._restoring_state = False
-        self._snapshots: dict[str, tuple[ProjectState, Optional[np.ndarray], list[tuple[int, int]], list[Optional[Image.Image]]]] = {}
+        self._snapshots: dict[str, tuple[ProjectState, Optional[np.ndarray], list[tuple[int, int]], list[Optional[Image.Image]], list[Optional[np.ndarray]]]] = {}
         self._pick_mode: str = "eyedropper"
         self._selection_mask: Optional[np.ndarray] = None
         self._lasso_points: list[tuple[int, int]] = []
+        self._painting_active = False
+        self._paint_changed = False
+        self._paint_last_src_xy: Optional[tuple[int, int]] = None
+        self._paint_rng = random.Random(0)
+        self._paint_stroke_seed = 0
 
         self._act_undo: Optional[QAction] = None
         self._act_redo: Optional[QAction] = None
@@ -71,6 +80,9 @@ class MainWindow(QMainWindow):
             on_pick_color_at_canvas_pos=self._pick_color_at_canvas_xy,
             on_pick_drag_at_canvas_pos=self._pick_drag_at_canvas_xy,
             on_pick_finish=self._pick_finish,
+            on_paint_start_at_canvas_pos=self._paint_start_at_canvas_xy,
+            on_paint_drag_at_canvas_pos=self._paint_drag_at_canvas_xy,
+            on_paint_finish=self._paint_finish,
         )
         self.canvas.setAcceptDrops(True)
 
@@ -119,6 +131,10 @@ class MainWindow(QMainWindow):
             self._layer_images.extend([None] * (len(self.state.layers) - len(self._layer_images)))
         elif len(self._layer_images) > len(self.state.layers):
             self._layer_images = self._layer_images[:len(self.state.layers)]
+        if len(self._layer_alpha_masks) < len(self.state.layers):
+            self._layer_alpha_masks.extend([None] * (len(self.state.layers) - len(self._layer_alpha_masks)))
+        elif len(self._layer_alpha_masks) > len(self.state.layers):
+            self._layer_alpha_masks = self._layer_alpha_masks[:len(self.state.layers)]
 
 
     def _build_layers_dock(self) -> None:
@@ -184,6 +200,7 @@ class MainWindow(QMainWindow):
         idx = len(self.state.layers) + 1
         self.state.layers.insert(0, LayerState(name=f"Layer {idx}"))
         self._layer_images.insert(0, None)
+        self._layer_alpha_masks.insert(0, None)
         self.state.active_layer_index = 0
         self._refresh_layers_ui()
         self._sync_ui_from_state()
@@ -196,6 +213,7 @@ class MainWindow(QMainWindow):
         i = self.state.active_layer_index
         self.state.layers.pop(i)
         self._layer_images.pop(i)
+        self._layer_alpha_masks.pop(i)
         self.state.active_layer_index = max(0, min(i, len(self.state.layers) - 1))
         self._refresh_layers_ui()
         self._sync_ui_from_state()
@@ -208,6 +226,7 @@ class MainWindow(QMainWindow):
         src_layer.name = f"{src_layer.name} Copy"
         self.state.layers.insert(i, src_layer)
         self._layer_images.insert(i, None if self._layer_images[i] is None else self._layer_images[i].copy())
+        self._layer_alpha_masks.insert(i, None if self._layer_alpha_masks[i] is None else self._layer_alpha_masks[i].copy())
         self.state.active_layer_index = i
         self._refresh_layers_ui()
         self._sync_ui_from_state()
@@ -221,6 +240,7 @@ class MainWindow(QMainWindow):
         self._push_undo_state()
         self.state.layers[i], self.state.layers[j] = self.state.layers[j], self.state.layers[i]
         self._layer_images[i], self._layer_images[j] = self._layer_images[j], self._layer_images[i]
+        self._layer_alpha_masks[i], self._layer_alpha_masks[j] = self._layer_alpha_masks[j], self._layer_alpha_masks[i]
         self.state.active_layer_index = j
         self._refresh_layers_ui()
         self._sync_ui_from_state()
@@ -648,6 +668,114 @@ class MainWindow(QMainWindow):
         self._add_labeled_row(gl_adj, "Temperature", self.temperature_spin)
         v.addWidget(g_adj)
 
+        g_paint, gl_paint = self._make_group("Paint / Retouch")
+        self.paint_enable_chk = QCheckBox("Enable paint tools")
+        self.paint_enable_chk.toggled.connect(self._on_paint_controls_changed)
+        gl_paint.addWidget(self.paint_enable_chk)
+
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(QLabel("Preset"))
+        self.paint_preset_combo = QComboBox()
+        self.paint_preset_combo.currentIndexChanged.connect(self._on_brush_preset_selected)
+        preset_row.addWidget(self.paint_preset_combo, 1)
+        gl_paint.addLayout(preset_row)
+
+        preset_btns = QHBoxLayout()
+        self.paint_preset_save_btn = QPushButton("Save Custom")
+        self.paint_preset_save_btn.clicked.connect(self._save_custom_brush_preset)
+        preset_btns.addWidget(self.paint_preset_save_btn)
+        self.paint_preset_update_btn = QPushButton("Update")
+        self.paint_preset_update_btn.clicked.connect(self._update_selected_custom_preset)
+        preset_btns.addWidget(self.paint_preset_update_btn)
+        self.paint_preset_delete_btn = QPushButton("Delete")
+        self.paint_preset_delete_btn.clicked.connect(self._delete_selected_custom_preset)
+        preset_btns.addWidget(self.paint_preset_delete_btn)
+        gl_paint.addLayout(preset_btns)
+
+        tool_row = QHBoxLayout()
+        tool_row.addWidget(QLabel("Tool"))
+        self.paint_tool_combo = QComboBox()
+        self.paint_tool_combo.addItem("Brush (restore alpha)", userData="paint")
+        self.paint_tool_combo.addItem("Eraser (remove alpha)", userData="erase")
+        self.paint_tool_combo.currentIndexChanged.connect(self._on_paint_controls_changed)
+        tool_row.addWidget(self.paint_tool_combo, 1)
+        gl_paint.addLayout(tool_row)
+
+        size_row = QHBoxLayout()
+        size_row.addWidget(QLabel("Size"))
+        self.paint_size_spin = QSpinBox()
+        self.paint_size_spin.setRange(1, 256)
+        self.paint_size_spin.setValue(24)
+        self.paint_size_spin.valueChanged.connect(self._on_paint_controls_changed)
+        size_row.addWidget(self.paint_size_spin, 1)
+        gl_paint.addLayout(size_row)
+
+        hard_row = QHBoxLayout()
+        hard_row.addWidget(QLabel("Hardness"))
+        self.paint_hardness_slider = QSlider(Qt.Horizontal)
+        self.paint_hardness_slider.setRange(1, 100)
+        self.paint_hardness_slider.setValue(80)
+        self.paint_hardness_slider.valueChanged.connect(self._on_paint_controls_changed)
+        hard_row.addWidget(self.paint_hardness_slider, 1)
+        self.paint_hardness_label = QLabel("80%")
+        hard_row.addWidget(self.paint_hardness_label)
+        gl_paint.addLayout(hard_row)
+
+        spacing_row = QHBoxLayout()
+        spacing_row.addWidget(QLabel("Spacing"))
+        self.paint_spacing_slider = QSlider(Qt.Horizontal)
+        self.paint_spacing_slider.setRange(1, 100)
+        self.paint_spacing_slider.setValue(12)
+        self.paint_spacing_slider.valueChanged.connect(self._on_paint_controls_changed)
+        spacing_row.addWidget(self.paint_spacing_slider, 1)
+        self.paint_spacing_label = QLabel("12%")
+        spacing_row.addWidget(self.paint_spacing_label)
+        gl_paint.addLayout(spacing_row)
+
+        flow_row = QHBoxLayout()
+        flow_row.addWidget(QLabel("Flow"))
+        self.paint_flow_slider = QSlider(Qt.Horizontal)
+        self.paint_flow_slider.setRange(1, 100)
+        self.paint_flow_slider.setValue(100)
+        self.paint_flow_slider.valueChanged.connect(self._on_paint_controls_changed)
+        flow_row.addWidget(self.paint_flow_slider, 1)
+        self.paint_flow_label = QLabel("100%")
+        flow_row.addWidget(self.paint_flow_label)
+        gl_paint.addLayout(flow_row)
+
+        strength_row = QHBoxLayout()
+        strength_row.addWidget(QLabel("Opacity"))
+        self.paint_strength_slider = QSlider(Qt.Horizontal)
+        self.paint_strength_slider.setRange(1, 100)
+        self.paint_strength_slider.setValue(100)
+        self.paint_strength_slider.valueChanged.connect(self._on_paint_controls_changed)
+        strength_row.addWidget(self.paint_strength_slider, 1)
+        self.paint_strength_label = QLabel("100%")
+        strength_row.addWidget(self.paint_strength_label)
+        gl_paint.addLayout(strength_row)
+
+        jitter_row = QHBoxLayout()
+        jitter_row.addWidget(QLabel("Scatter"))
+        self.paint_scatter_slider = QSlider(Qt.Horizontal)
+        self.paint_scatter_slider.setRange(0, 100)
+        self.paint_scatter_slider.setValue(0)
+        self.paint_scatter_slider.valueChanged.connect(self._on_paint_controls_changed)
+        jitter_row.addWidget(self.paint_scatter_slider, 1)
+        self.paint_scatter_label = QLabel("0%")
+        jitter_row.addWidget(self.paint_scatter_label)
+        gl_paint.addLayout(jitter_row)
+
+        sym_row = QHBoxLayout()
+        self.paint_sym_x_chk = QCheckBox("Symmetry X")
+        self.paint_sym_y_chk = QCheckBox("Symmetry Y")
+        self.paint_sym_x_chk.toggled.connect(self._on_paint_controls_changed)
+        self.paint_sym_y_chk.toggled.connect(self._on_paint_controls_changed)
+        sym_row.addWidget(self.paint_sym_x_chk)
+        sym_row.addWidget(self.paint_sym_y_chk)
+        gl_paint.addLayout(sym_row)
+
+        v.addWidget(g_paint)
+        self._refresh_brush_preset_combo(self.state.active_brush_id)
         g_flow, gl_flow = self._make_group("Workflow")
         snap_row = QHBoxLayout()
         self.snapshot_combo = QComboBox()
@@ -725,6 +853,7 @@ class MainWindow(QMainWindow):
                     selection_invert=self.state.selection_invert,
                     selection_rect=(self.state.sel_x, self.state.sel_y, self.state.sel_w, self.state.sel_h),
                     selection_mask=self._selection_mask if i == self.state.active_layer_index else None,
+                    alpha_paint_mask=self._layer_alpha_masks[i] if i < len(self._layer_alpha_masks) else None,
                 )
             )
         export_img = composite_layers_to_canvas(
@@ -762,6 +891,7 @@ class MainWindow(QMainWindow):
 
         src_error: Optional[str] = None
         loaded_images: list[Optional[Image.Image]] = []
+        loaded_alpha_masks: list[Optional[np.ndarray]] = []
         for layer in loaded_state.layers:
             img: Optional[Image.Image] = None
             if layer.src_path:
@@ -770,9 +900,11 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     src_error = str(e)
             loaded_images.append(img)
+            loaded_alpha_masks.append(self._decode_alpha_mask_data(layer.alpha_paint_mask_data, img.size if img is not None else None))
 
         self.state = loaded_state
         self._layer_images = loaded_images
+        self._layer_alpha_masks = loaded_alpha_masks
         self._sync_layer_image_slots()
         self._project_path = path
         self._selection_mask = None
@@ -801,6 +933,7 @@ class MainWindow(QMainWindow):
         if not (path.lower().endswith(".opm") or path.lower().endswith(".json")):
             path += ".opm"
         try:
+            self._persist_alpha_masks_to_state()
             save_project(path, self.state)
         except Exception as e:
             QMessageBox.critical(self, "Save project failed", str(e))
@@ -817,6 +950,8 @@ class MainWindow(QMainWindow):
         self.state.src_path = path
         self.state.active_layer().name = Path(path).stem
         self._src_img = img
+        self._layer_alpha_masks[self.state.active_layer_index] = None
+        self.state.active_layer().alpha_paint_mask_data = None
         self._project_path = None
         self._selection_mask = None
         self._lasso_points = []
@@ -872,7 +1007,8 @@ class MainWindow(QMainWindow):
         mask_copy = None if self._selection_mask is None else self._selection_mask.copy()
         lasso_copy = list(self._lasso_points)
         imgs_copy = [None if img is None else img.copy() for img in self._layer_images]
-        self._undo_stack.append((deepcopy(self.state), mask_copy, lasso_copy, imgs_copy))
+        alpha_copy = [None if mk is None else mk.copy() for mk in self._layer_alpha_masks]
+        self._undo_stack.append((deepcopy(self.state), mask_copy, lasso_copy, imgs_copy, alpha_copy))
         if len(self._undo_stack) > self._history_limit:
             self._undo_stack.pop(0)
         self._redo_stack.clear()
@@ -884,12 +1020,14 @@ class MainWindow(QMainWindow):
         selection_mask: Optional[np.ndarray],
         lasso_points: list[tuple[int, int]],
         layer_images: list[Optional[Image.Image]],
+        layer_alpha_masks: list[Optional[np.ndarray]],
     ) -> None:
         self._restoring_state = True
         self.state = deepcopy(state)
         self._selection_mask = None if selection_mask is None else selection_mask.copy()
         self._lasso_points = list(lasso_points)
         self._layer_images = [None if img is None else img.copy() for img in layer_images]
+        self._layer_alpha_masks = [None if mk is None else mk.copy() for mk in layer_alpha_masks]
         self._sync_layer_image_slots()
         self._sync_ui_from_state()
         self._restoring_state = False
@@ -900,9 +1038,10 @@ class MainWindow(QMainWindow):
             return
         cur_mask = None if self._selection_mask is None else self._selection_mask.copy()
         cur_imgs = [None if img is None else img.copy() for img in self._layer_images]
-        self._redo_stack.append((deepcopy(self.state), cur_mask, list(self._lasso_points), cur_imgs))
-        prev_state, prev_mask, prev_lasso, prev_imgs = self._undo_stack.pop()
-        self._apply_state(prev_state, prev_mask, prev_lasso, prev_imgs)
+        cur_alpha = [None if mk is None else mk.copy() for mk in self._layer_alpha_masks]
+        self._redo_stack.append((deepcopy(self.state), cur_mask, list(self._lasso_points), cur_imgs, cur_alpha))
+        prev_state, prev_mask, prev_lasso, prev_imgs, prev_alpha = self._undo_stack.pop()
+        self._apply_state(prev_state, prev_mask, prev_lasso, prev_imgs, prev_alpha)
         self._update_undo_redo_actions()
 
     def _redo(self) -> None:
@@ -910,9 +1049,10 @@ class MainWindow(QMainWindow):
             return
         cur_mask = None if self._selection_mask is None else self._selection_mask.copy()
         cur_imgs = [None if img is None else img.copy() for img in self._layer_images]
-        self._undo_stack.append((deepcopy(self.state), cur_mask, list(self._lasso_points), cur_imgs))
-        nxt_state, nxt_mask, nxt_lasso, nxt_imgs = self._redo_stack.pop()
-        self._apply_state(nxt_state, nxt_mask, nxt_lasso, nxt_imgs)
+        cur_alpha = [None if mk is None else mk.copy() for mk in self._layer_alpha_masks]
+        self._undo_stack.append((deepcopy(self.state), cur_mask, list(self._lasso_points), cur_imgs, cur_alpha))
+        nxt_state, nxt_mask, nxt_lasso, nxt_imgs, nxt_alpha = self._redo_stack.pop()
+        self._apply_state(nxt_state, nxt_mask, nxt_lasso, nxt_imgs, nxt_alpha)
         self._update_undo_redo_actions()
 
     def _update_undo_redo_actions(self) -> None:
@@ -1053,6 +1193,10 @@ class MainWindow(QMainWindow):
         self.vibrance_spin.blockSignals(False)
         self.temperature_spin.blockSignals(False)
 
+        if hasattr(self, "paint_enable_chk"):
+            self._refresh_brush_preset_combo(self.state.active_brush_id)
+            self.canvas.paint_enabled = bool(self.paint_enable_chk.isChecked())
+
         self.palette_widget.listw.blockSignals(True)
         self.palette_widget.listw.clear()
         for p in self.state.palette:
@@ -1060,6 +1204,175 @@ class MainWindow(QMainWindow):
             it = self.palette_widget.listw.item(self.palette_widget.listw.count() - 1)
             it.setCheckState(Qt.Checked if p.enabled else Qt.Unchecked)
         self.palette_widget.listw.blockSignals(False)
+
+    def _builtin_brush_presets(self) -> list[BrushPreset]:
+        return [
+            BrushPreset(preset_id="soft_round", name="Soft Round", tool_mode="paint", size=24.0, hardness=0.65, spacing=0.12, flow=1.0, opacity=1.0),
+            BrushPreset(preset_id="hard_round", name="Hard Round", tool_mode="paint", size=20.0, hardness=0.98, spacing=0.08, flow=1.0, opacity=1.0),
+            BrushPreset(preset_id="soft_eraser", name="Soft Eraser", tool_mode="erase", size=26.0, hardness=0.55, spacing=0.12, flow=1.0, opacity=1.0),
+            BrushPreset(preset_id="scatter", name="Scatter", tool_mode="paint", size=18.0, hardness=0.85, spacing=0.35, flow=0.9, opacity=0.9, jitter_scatter=0.45),
+            BrushPreset(preset_id="mirror_x", name="Mirror X", tool_mode="paint", size=18.0, hardness=0.8, spacing=0.15, flow=1.0, opacity=1.0, symmetry_x=True),
+        ]
+
+    def _all_brush_presets(self) -> list[BrushPreset]:
+        return self._builtin_brush_presets() + list(self.state.custom_brush_presets)
+
+    def _find_brush_preset(self, preset_id: str) -> Optional[BrushPreset]:
+        target = (preset_id or "").strip()
+        for preset in self._all_brush_presets():
+            if preset.preset_id == target:
+                return preset
+        return None
+
+    def _active_brush_preset(self) -> BrushPreset:
+        preset = self._find_brush_preset(self.state.active_brush_id)
+        if preset is None:
+            preset = self._builtin_brush_presets()[0]
+            self.state.active_brush_id = preset.preset_id
+        return preset
+
+    def _refresh_brush_preset_combo(self, selected_id: Optional[str] = None) -> None:
+        if not hasattr(self, "paint_preset_combo"):
+            return
+        presets = self._all_brush_presets()
+        wanted = selected_id or self.state.active_brush_id
+        self.paint_preset_combo.blockSignals(True)
+        self.paint_preset_combo.clear()
+        for p in presets:
+            kind = "(Custom)" if any(cp.preset_id == p.preset_id for cp in self.state.custom_brush_presets) else ""
+            label = f"{p.name} {kind}".strip()
+            self.paint_preset_combo.addItem(label, userData=p.preset_id)
+        idx = self.paint_preset_combo.findData(wanted)
+        if idx < 0:
+            idx = 0
+            if presets:
+                self.state.active_brush_id = presets[0].preset_id
+        self.paint_preset_combo.setCurrentIndex(max(0, idx))
+        self.paint_preset_combo.blockSignals(False)
+        self._on_brush_preset_selected(self.paint_preset_combo.currentIndex())
+
+    def _apply_preset_to_paint_controls(self, preset: BrushPreset) -> None:
+        if not hasattr(self, "paint_tool_combo"):
+            return
+        self.paint_tool_combo.blockSignals(True)
+        self.paint_size_spin.blockSignals(True)
+        self.paint_hardness_slider.blockSignals(True)
+        self.paint_spacing_slider.blockSignals(True)
+        self.paint_flow_slider.blockSignals(True)
+        self.paint_strength_slider.blockSignals(True)
+        self.paint_scatter_slider.blockSignals(True)
+        self.paint_sym_x_chk.blockSignals(True)
+        self.paint_sym_y_chk.blockSignals(True)
+
+        tool_idx = self.paint_tool_combo.findData("erase" if preset.tool_mode == "erase" else "paint")
+        if tool_idx < 0:
+            tool_idx = 0
+        self.paint_tool_combo.setCurrentIndex(tool_idx)
+        self.paint_size_spin.setValue(max(1, min(256, int(round(preset.size)))))
+        self.paint_hardness_slider.setValue(max(1, min(100, int(round(preset.hardness * 100.0)))))
+        self.paint_spacing_slider.setValue(max(1, min(100, int(round(preset.spacing * 100.0)))))
+        self.paint_flow_slider.setValue(max(1, min(100, int(round(preset.flow * 100.0)))))
+        self.paint_strength_slider.setValue(max(1, min(100, int(round(preset.opacity * 100.0)))))
+        self.paint_scatter_slider.setValue(max(0, min(100, int(round(preset.jitter_scatter * 100.0)))))
+        self.paint_sym_x_chk.setChecked(bool(preset.symmetry_x))
+        self.paint_sym_y_chk.setChecked(bool(preset.symmetry_y))
+
+        self.paint_tool_combo.blockSignals(False)
+        self.paint_size_spin.blockSignals(False)
+        self.paint_hardness_slider.blockSignals(False)
+        self.paint_spacing_slider.blockSignals(False)
+        self.paint_flow_slider.blockSignals(False)
+        self.paint_strength_slider.blockSignals(False)
+        self.paint_scatter_slider.blockSignals(False)
+        self.paint_sym_x_chk.blockSignals(False)
+        self.paint_sym_y_chk.blockSignals(False)
+
+        self._on_paint_controls_changed()
+
+    def _capture_current_brush_preset(self, preset_id: str, name: str) -> BrushPreset:
+        return BrushPreset(
+            preset_id=preset_id,
+            name=name,
+            tool_mode=str(self.paint_tool_combo.currentData() or "paint"),
+            size=float(self.paint_size_spin.value()),
+            hardness=float(self.paint_hardness_slider.value()) / 100.0,
+            spacing=float(self.paint_spacing_slider.value()) / 100.0,
+            flow=float(self.paint_flow_slider.value()) / 100.0,
+            opacity=float(self.paint_strength_slider.value()) / 100.0,
+            jitter_scatter=float(self.paint_scatter_slider.value()) / 100.0,
+            symmetry_x=bool(self.paint_sym_x_chk.isChecked()),
+            symmetry_y=bool(self.paint_sym_y_chk.isChecked()),
+        )
+
+    def _on_brush_preset_selected(self, _index: int) -> None:
+        preset_id = str(self.paint_preset_combo.currentData() or "").strip()
+        preset = self._find_brush_preset(preset_id)
+        if preset is None:
+            return
+        self.state.active_brush_id = preset.preset_id
+        self._apply_preset_to_paint_controls(preset)
+
+    def _save_custom_brush_preset(self) -> None:
+        name, ok = QInputDialog.getText(self, "Save Custom Brush Preset", "Preset name:")
+        if not ok or not name.strip():
+            return
+        base_id = "custom_" + "_".join(name.lower().strip().split())
+        preset_id = base_id
+        counter = 2
+        existing = {p.preset_id for p in self._all_brush_presets()}
+        while preset_id in existing:
+            preset_id = f"{base_id}_{counter}"
+            counter += 1
+        preset = self._capture_current_brush_preset(preset_id, name.strip())
+        self.state.custom_brush_presets.append(preset)
+        self.state.active_brush_id = preset.preset_id
+        self._refresh_brush_preset_combo(preset.preset_id)
+
+    def _update_selected_custom_preset(self) -> None:
+        preset_id = str(self.paint_preset_combo.currentData() or "").strip()
+        for i, p in enumerate(self.state.custom_brush_presets):
+            if p.preset_id == preset_id:
+                self.state.custom_brush_presets[i] = self._capture_current_brush_preset(preset_id, p.name)
+                self._refresh_brush_preset_combo(preset_id)
+                return
+        QMessageBox.information(self, "Brush Presets", "Select a custom preset to update.")
+
+    def _delete_selected_custom_preset(self) -> None:
+        preset_id = str(self.paint_preset_combo.currentData() or "").strip()
+        before = len(self.state.custom_brush_presets)
+        self.state.custom_brush_presets = [p for p in self.state.custom_brush_presets if p.preset_id != preset_id]
+        if len(self.state.custom_brush_presets) == before:
+            QMessageBox.information(self, "Brush Presets", "Only custom presets can be deleted.")
+            return
+        self.state.active_brush_id = "soft_round"
+        self._refresh_brush_preset_combo(self.state.active_brush_id)
+
+    def _encode_alpha_mask_data(self, mask: Optional[np.ndarray]) -> Optional[str]:
+        if mask is None:
+            return None
+        arr = np.asarray(mask, dtype=np.uint8)
+        img = Image.fromarray(arr, mode="L")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+
+    def _decode_alpha_mask_data(self, data: Optional[str], size: Optional[tuple[int, int]]) -> Optional[np.ndarray]:
+        if not data:
+            return None
+        try:
+            raw = base64.b64decode(data.encode("ascii"))
+            img = Image.open(io.BytesIO(raw)).convert("L")
+            if size is not None and img.size != size:
+                img = img.resize(size, resample=Image.Resampling.BILINEAR)
+            return np.array(img, dtype=np.uint8)
+        except Exception:
+            return None
+
+    def _persist_alpha_masks_to_state(self) -> None:
+        self._sync_layer_image_slots()
+        for i, layer in enumerate(self.state.layers):
+            mask = self._layer_alpha_masks[i] if i < len(self._layer_alpha_masks) else None
+            layer.alpha_paint_mask_data = self._encode_alpha_mask_data(mask)
 
     def _update_status(self) -> None:
         src_size = f"{self._src_img.width}x{self._src_img.height}" if self._src_img is not None else "none"
@@ -1236,7 +1549,8 @@ class MainWindow(QMainWindow):
         nm = name.strip()
         mask_copy = None if self._selection_mask is None else self._selection_mask.copy()
         imgs_copy = [None if img is None else img.copy() for img in self._layer_images]
-        self._snapshots[nm] = (deepcopy(self.state), mask_copy, list(self._lasso_points), imgs_copy)
+        alpha_copy = [None if mk is None else mk.copy() for mk in self._layer_alpha_masks]
+        self._snapshots[nm] = (deepcopy(self.state), mask_copy, list(self._lasso_points), imgs_copy, alpha_copy)
         if self.snapshot_combo.findText(nm) < 0:
             self.snapshot_combo.addItem(nm)
         self.snapshot_combo.setCurrentText(nm)
@@ -1246,8 +1560,14 @@ class MainWindow(QMainWindow):
         if not nm or nm not in self._snapshots:
             return
         self._push_undo_state()
-        st, mk, lp, imgs = self._snapshots[nm]
-        self._apply_state(deepcopy(st), None if mk is None else mk.copy(), list(lp), [None if img is None else img.copy() for img in imgs])
+        st, mk, lp, imgs, alpha = self._snapshots[nm]
+        self._apply_state(
+            deepcopy(st),
+            None if mk is None else mk.copy(),
+            list(lp),
+            [None if img is None else img.copy() for img in imgs],
+            [None if m is None else m.copy() for m in alpha],
+        )
 
     def batch_export(self) -> None:
         in_dir = QFileDialog.getExistingDirectory(self, "Batch Input Folder")
@@ -1461,9 +1781,29 @@ class MainWindow(QMainWindow):
         self._rerender()
 
     def _on_eyedropper_toggled(self, on: bool) -> None:
+        if on and getattr(self, "paint_enable_chk", None) is not None and self.paint_enable_chk.isChecked():
+            self.paint_enable_chk.setChecked(False)
         self.canvas.eyedropper_enabled = on
         self.eyedropper_btn.setText(f"Pick: ON ({self._pick_mode})" if on else "Pick: OFF")
         self.canvas.update()
+
+    def _on_paint_controls_changed(self, *_args) -> None:
+        self.paint_hardness_label.setText(f"{int(self.paint_hardness_slider.value())}%")
+        self.paint_spacing_label.setText(f"{int(self.paint_spacing_slider.value())}%")
+        self.paint_flow_label.setText(f"{int(self.paint_flow_slider.value())}%")
+        self.paint_strength_label.setText(f"{int(self.paint_strength_slider.value())}%")
+        self.paint_scatter_label.setText(f"{int(self.paint_scatter_slider.value())}%")
+        on = bool(self.paint_enable_chk.isChecked())
+        if on and self.eyedropper_btn.isChecked():
+            self.eyedropper_btn.setChecked(False)
+        self.canvas.paint_enabled = on
+
+        preset_id = str(self.paint_preset_combo.currentData() or "").strip()
+        is_custom = any(p.preset_id == preset_id for p in self.state.custom_brush_presets)
+        self.paint_preset_update_btn.setEnabled(is_custom)
+        self.paint_preset_delete_btn.setEnabled(is_custom)
+        self.canvas.update()
+
 
     def _turn_on_eyedropper(self) -> None:
         self.eyedropper_btn.setChecked(True)
@@ -1492,6 +1832,155 @@ class MainWindow(QMainWindow):
     # ---------------------------
     # Canvas interactions
     # ---------------------------
+    def _ensure_active_layer_alpha_mask(self) -> Optional[np.ndarray]:
+        self._sync_layer_image_slots()
+        idx = self.state.active_layer_index
+        src = self._src_img
+        if src is None:
+            return None
+        mask = self._layer_alpha_masks[idx]
+        if mask is None or mask.shape != (src.height, src.width):
+            mask = np.full((src.height, src.width), 255, dtype=np.uint8)
+            self._layer_alpha_masks[idx] = mask
+        return mask
+
+    def _paint_strength(self) -> float:
+        return max(0.01, min(1.0, float(self.paint_strength_slider.value()) / 100.0))
+
+    def _paint_flow(self) -> float:
+        return max(0.01, min(1.0, float(self.paint_flow_slider.value()) / 100.0))
+
+    def _paint_hardness(self) -> float:
+        return max(0.01, min(1.0, float(self.paint_hardness_slider.value()) / 100.0))
+
+    def _paint_spacing(self) -> float:
+        return max(0.01, min(1.0, float(self.paint_spacing_slider.value()) / 100.0))
+
+    def _paint_scatter(self) -> float:
+        return max(0.0, min(1.0, float(self.paint_scatter_slider.value()) / 100.0))
+
+    def _paint_mode(self) -> str:
+        mode = str(self.paint_tool_combo.currentData() or "paint")
+        return "erase" if mode == "erase" else "paint"
+
+    def _symmetry_points(self, sx: int, sy: int, w: int, h: int) -> list[tuple[int, int]]:
+        pts = {(sx, sy)}
+        if self.paint_sym_x_chk.isChecked():
+            pts.add((w - 1 - sx, sy))
+        if self.paint_sym_y_chk.isChecked():
+            pts.add((sx, h - 1 - sy))
+        if self.paint_sym_x_chk.isChecked() and self.paint_sym_y_chk.isChecked():
+            pts.add((w - 1 - sx, h - 1 - sy))
+        return [(max(0, min(w - 1, x)), max(0, min(h - 1, y))) for (x, y) in pts]
+
+
+    def _apply_brush_dab(self, mask: np.ndarray, sx: int, sy: int, radius: float, mode: str, strength: float, hardness: float) -> bool:
+        h, w = mask.shape
+        r = max(1.0, float(radius))
+        ir = int(np.ceil(r))
+        x0 = max(0, int(sx - ir))
+        y0 = max(0, int(sy - ir))
+        x1 = min(w, int(sx + ir + 1))
+        y1 = min(h, int(sy + ir + 1))
+        if x1 <= x0 or y1 <= y0:
+            return False
+
+        yy, xx = np.ogrid[y0:y1, x0:x1]
+        dist = np.sqrt((xx - sx) * (xx - sx) + (yy - sy) * (yy - sy)).astype(np.float32)
+        if not np.any(dist <= r):
+            return False
+
+        feather_start = r * hardness
+        if feather_start >= r:
+            weight = (dist <= r).astype(np.float32)
+        else:
+            falloff = (r - dist) / max(1e-6, (r - feather_start))
+            weight = np.clip(falloff, 0.0, 1.0)
+            weight[dist <= feather_start] = 1.0
+
+        view = mask[y0:y1, x0:x1].astype(np.float32)
+        target = 0.0 if mode == "erase" else 255.0
+        blend = np.clip(weight * strength, 0.0, 1.0)
+        view = view * (1.0 - blend) + target * blend
+        mask[y0:y1, x0:x1] = np.clip(view, 0, 255).astype(np.uint8)
+        return True
+
+    def _paint_segment(self, mask: np.ndarray, p0: tuple[int, int], p1: tuple[int, int]) -> bool:
+        base_radius = max(1.0, float(self.paint_size_spin.value()) * 0.5)
+        hardness = self._paint_hardness()
+        spacing = self._paint_spacing()
+        strength = self._paint_strength() * self._paint_flow()
+        scatter = self._paint_scatter()
+        mode = self._paint_mode()
+        h, w = mask.shape
+
+        x0, y0 = p0
+        x1, y1 = p1
+        dist = float(np.hypot(float(x1 - x0), float(y1 - y0)))
+        step = max(1.0, base_radius * spacing)
+        steps = max(1, int(np.ceil(dist / step)))
+        changed = False
+        for i in range(steps + 1):
+            t = 0.0 if steps == 0 else (i / float(steps))
+            sx = float(x0 + (x1 - x0) * t)
+            sy = float(y0 + (y1 - y0) * t)
+
+            size_jitter = 1.0
+            if self.paint_scatter_slider.value() > 0:
+                size_jitter += self._paint_rng.uniform(-0.25, 0.25) * scatter
+            radius = max(1.0, base_radius * size_jitter)
+
+            if scatter > 0.0:
+                jitter_r = base_radius * scatter
+                sx += self._paint_rng.uniform(-jitter_r, jitter_r)
+                sy += self._paint_rng.uniform(-jitter_r, jitter_r)
+
+            px = int(round(max(0.0, min(float(w - 1), sx))))
+            py = int(round(max(0.0, min(float(h - 1), sy))))
+            for tx, ty in self._symmetry_points(px, py, w, h):
+                changed = self._apply_brush_dab(mask, tx, ty, radius, mode, strength, hardness) or changed
+        return changed
+
+
+    def _paint_start_at_canvas_xy(self, cx: int, cy: int) -> None:
+        src_xy = self._canvas_to_source_xy(cx, cy)
+        if src_xy is None:
+            self._painting_active = False
+            return
+        mask = self._ensure_active_layer_alpha_mask()
+        if mask is None:
+            self._painting_active = False
+            return
+        self._push_undo_state()
+        self._paint_changed = False
+        self._paint_last_src_xy = src_xy
+        self._painting_active = True
+        self._paint_stroke_seed += 1
+        self._paint_rng.seed(self._paint_stroke_seed)
+        if self._paint_segment(mask, src_xy, src_xy):
+            self._paint_changed = True
+            self.state.active_layer().alpha_paint_mask_data = self._encode_alpha_mask_data(mask)
+            self._rerender()
+
+    def _paint_drag_at_canvas_xy(self, cx: int, cy: int) -> None:
+        if not self._painting_active or self._paint_last_src_xy is None:
+            return
+        src_xy = self._canvas_to_source_xy(cx, cy)
+        if src_xy is None:
+            return
+        mask = self._ensure_active_layer_alpha_mask()
+        if mask is None:
+            return
+        if self._paint_segment(mask, self._paint_last_src_xy, src_xy):
+            self._paint_changed = True
+            self.state.active_layer().alpha_paint_mask_data = self._encode_alpha_mask_data(mask)
+            self._rerender()
+        self._paint_last_src_xy = src_xy
+
+    def _paint_finish(self) -> None:
+        self._painting_active = False
+        self._paint_last_src_xy = None
+
     def _fit_image_to_canvas(self) -> None:
         if self._src_img is None:
             return
@@ -1673,6 +2162,7 @@ class MainWindow(QMainWindow):
                     selection_invert=self.state.selection_invert,
                     selection_rect=(self.state.sel_x, self.state.sel_y, self.state.sel_w, self.state.sel_h),
                     selection_mask=None if compare_before else (self._selection_mask if i == self.state.active_layer_index else None),
+                    alpha_paint_mask=self._layer_alpha_masks[i] if i < len(self._layer_alpha_masks) else None,
                 )
             )
 
