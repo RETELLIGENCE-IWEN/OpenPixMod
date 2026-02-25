@@ -11,6 +11,24 @@ class PaletteColor:
 
 
 @dataclass
+class BrushPreset:
+    preset_id: str
+    name: str
+    tool_mode: str = "paint"
+    size: float = 24.0
+    hardness: float = 0.8
+    spacing: float = 0.12
+    flow: float = 1.0
+    opacity: float = 1.0
+    jitter_size: float = 0.0
+    jitter_angle: float = 0.0
+    jitter_scatter: float = 0.0
+    blend_mode: str = "normal"
+    symmetry_x: bool = False
+    symmetry_y: bool = False
+
+
+@dataclass
 class LayerState:
     name: str = "Layer 1"
     src_path: Optional[str] = None
@@ -71,6 +89,11 @@ class ProjectState:
     # Layer stack
     layers: List[LayerState] = field(default_factory=lambda: [LayerState()])
     active_layer_index: int = 0
+
+    # Brush workspace
+    brush_engine_version: int = 1
+    active_brush_id: str = "soft_round"
+    custom_brush_presets: List[BrushPreset] = field(default_factory=list)
 
     def _ensure_layers(self) -> None:
         if not self.layers:
